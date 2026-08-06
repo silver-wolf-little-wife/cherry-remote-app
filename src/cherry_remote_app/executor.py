@@ -309,7 +309,8 @@ class Executor:
 
         from PIL import ImageGrab
 
-        image = ImageGrab.grab()
+        # all_screens=True：截取所有显示器组成的完整虚拟桌面，避免多屏时只截主屏
+        image = ImageGrab.grab(all_screens=True)
         buf = io.BytesIO()
         image.save(buf, format="PNG")
         raw = buf.getvalue()
