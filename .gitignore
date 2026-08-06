@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# 配置与密钥
+config.yaml
+.env
+*.pem
+
+# 日志
+*.log
+logs/
+
+# 系统
+.DS_Store
+Thumbs.db

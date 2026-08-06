@@ -1,0 +1,3 @@
+websockets>=12.0
+psutil>=5.9
+PyYAML>=6.0

@@ -1,0 +1,26 @@
+# Cherry Remote App 配置样例
+# 复制为 config.yaml 并按需修改
+
+# B 端 AstrBot 插件的 WebSocket 地址（wss 时用 wss://）
+server_url: "ws://127.0.0.1:8765/ws"
+
+# 认证 token（必须与 B 端插件配置一致）
+auth_token: "change-me"
+
+# 本机设备标识（多设备时用于区分）
+device_id: "home-pc"
+
+# 心跳间隔（秒），主动向 B 端发送 ping
+heartbeat_interval: 15
+
+# 断线最大重连间隔（秒），指数退避到该上限
+max_reconnect_delay: 60
+
+# 指令执行默认超时（秒）
+default_timeout: 30
+
+# 指令白名单（仅允许执行以下 method）
+allowed_actions:
+  - exec
+  - sys
+  - ping
