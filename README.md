@@ -1,3 +1,14 @@
+<h3 align="center">⚠️ 双仓库协作项目 / Two-Repo Project</h3>
+<p align="center"><b>本项目需要两个仓库共同部署才能完整运作：</b></p>
+<p align="center">
+<a href="https://github.com/silver-wolf-little-wife/cherry-astrbot"><b>cherry-astrbot</b></a>（B 端 · AstrBot 插件） ↔ <a href="https://github.com/silver-wolf-little-wife/cherry-remote-app"><b>cherry-remote-app</b></a>（C 端 · 执行器）
+</p>
+
+> [!IMPORTANT]
+> 本仓库是 **C 端执行器**，必须与 **B 端插件 [cherry-astrbot](https://github.com/silver-wolf-little-wife/cherry-astrbot)** 配合部署。请同时获取两个仓库。
+
+---
+
 # cherry-remote-app
 
 Cherry Remote 远程操控系统 · **C 端执行器**。
