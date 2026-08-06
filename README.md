@@ -58,4 +58,4 @@ python -m cherry_remote_app -c config.yaml
 
 ## 许可
 
-（待主人选择许可证，M7 补全）
+[MIT](LICENSE)
