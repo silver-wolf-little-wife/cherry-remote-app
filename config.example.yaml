@@ -26,7 +26,7 @@ build_exe_index: true
 exe_index_file: "exe_index.json"
 
 # 指令白名单（仅允许执行以下 method）
-# exec=shell  file=文件操作  app=应用启停  sys=系统信息  screenshot=截屏  ping=连通性
+# exec=shell  file=文件操作  app=应用启停  sys=系统信息  screenshot=截屏  ping=连通性  system=急停/状态
 allowed_actions:
   - exec
   - sys
@@ -34,3 +34,7 @@ allowed_actions:
   - file
   - app
   - screenshot
+  - system
+
+# 急停开关：置 true 后拒绝执行一切指令（本地熔断）
+emergency_stop: false

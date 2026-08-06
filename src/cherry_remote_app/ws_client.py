@@ -12,6 +12,10 @@ from .executor import Executor
 LOG = logging.getLogger("cherry-remote-app.ws")
 
 
+class _ShutdownSignal(Exception):
+    """内部信号：收到 system stop 后触发，用于干净退出主循环。"""
+
+
 def _truncate(text, limit: int = 200) -> str:
     """将文本压成一行并截断，用于日志摘要。"""
     text = str(text).replace("\n", "\\n").replace("\r", "")
@@ -56,6 +60,9 @@ class WsClient:
                 delay = 1.0
             except asyncio.CancelledError:
                 raise
+            except _ShutdownSignal:
+                LOG.info("收到停机指令，C 端退出。")
+                return
             except Exception as e:  # noqa: BLE001 —— 断线重连属预期路径
                 LOG.error("连接异常: %s", e)
             delay = min(delay * 2, self.max_reconnect_delay)
@@ -142,6 +149,8 @@ class WsClient:
                 "error": {"code": type(e).__name__, "message": str(e)},
             }
         await ws.send(json.dumps(resp, ensure_ascii=False, default=str))
+        if getattr(self.executor, "shutdown_requested", False):
+            raise _ShutdownSignal()
 
     async def _heartbeat_loop(self, ws) -> None:
         while True:

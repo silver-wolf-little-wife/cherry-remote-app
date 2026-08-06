@@ -59,9 +59,14 @@ def _cap_text(text: str, limit: int = _MAX_OUTPUT_LEN) -> tuple[str, bool]:
 class Executor:
     def __init__(self, config: dict):
         self.allowed_actions: set[str] = set(
-            config.get("allowed_actions", ["exec", "sys", "ping"])
+            config.get("allowed_actions", ["exec", "sys", "ping", "file", "app", "screenshot", "system"])
         )
         self.default_timeout: float = float(config.get("default_timeout", 30))
+        self.device_id: str = str(config.get("device_id", "unknown"))
+        # 急停开关：置 true 后拒绝执行一切指令
+        self.emergency_stop: bool = bool(config.get("emergency_stop", False))
+        self.shutdown_requested: bool = False
+        self._start_time: float = time.time()
         # exe 索引
         self.build_exe_index: bool = bool(config.get("build_exe_index", True))
         self.exe_index_file: str = str(config.get("exe_index_file", "exe_index.json"))
@@ -70,12 +75,34 @@ class Executor:
 
     async def execute(self, method: str, params: dict) -> dict:
         """执行一条指令。method 不在白名单或未实现时抛异常。"""
+        if self.emergency_stop:
+            raise PermissionError("紧急停机已启用（emergency_stop），拒绝执行所有指令")
         if method not in self.allowed_actions:
             raise PermissionError(f"action '{method}' 不在白名单内")
         handler = getattr(self, f"_exec_{method}", None)
         if handler is None:
             raise NotImplementedError(f"method '{method}' 未实现")
         return await handler(params or {})
+
+    # ---------- system 方法（急停/状态） ----------
+
+    async def _exec_system(self, params: dict) -> dict:
+        action = params.get("action", "status")
+        if action == "status":
+            return {
+                "status": "ok",
+                "version": "0.1.0",
+                "device_id": self.device_id,
+                "pid": os.getpid(),
+                "uptime": round(time.time() - self._start_time, 1),
+                "emergency_stop": self.emergency_stop,
+                "exe_index_entries": len(self.exe_index),
+                "allowed_actions": sorted(self.allowed_actions),
+            }
+        if action == "stop":
+            self.shutdown_requested = True
+            return {"ok": True, "action": "stop", "shutdown": True}
+        raise NotImplementedError(f"system action '{action}' 未实现")
 
     # ---------- method 实现 ----------
 
