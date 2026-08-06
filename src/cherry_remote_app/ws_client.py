@@ -47,6 +47,7 @@ class WsClient:
 
     async def run(self) -> None:
         """主循环：连接 → 服务 → 异常重连。"""
+        self.executor.start_background_tasks()  # 启动 exe 索引构建等后台任务
         delay = 1.0
         while True:
             try:

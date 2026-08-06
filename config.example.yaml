@@ -19,6 +19,12 @@ max_reconnect_delay: 60
 # 指令执行默认超时（秒）
 default_timeout: 30
 
+# 启动时是否构建 exe 索引（供 app 工具查找/搜索应用）
+build_exe_index: true
+
+# exe 索引文件路径（相对启动目录）
+exe_index_file: "exe_index.json"
+
 # 指令白名单（仅允许执行以下 method）
 # exec=shell  file=文件操作  app=应用启停  sys=系统信息  screenshot=截屏  ping=连通性
 allowed_actions:

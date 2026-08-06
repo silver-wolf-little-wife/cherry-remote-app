@@ -6,6 +6,7 @@
 
 import asyncio
 import base64
+import json
 import locale
 import logging
 import os
@@ -17,6 +18,14 @@ from pathlib import Path
 import psutil
 
 LOG = logging.getLogger("cherry-remote-app.executor")
+
+# exe 索引默认扫描根目录
+_EXE_INDEX_ROOTS = (
+    r"C:\Windows\System32",
+    r"C:\Windows\SysWOW64",
+    r"C:\Program Files",
+    r"C:\Program Files (x86)",
+)
 
 
 def _decode_output(data: bytes) -> str:
@@ -43,6 +52,11 @@ class Executor:
             config.get("allowed_actions", ["exec", "sys", "ping"])
         )
         self.default_timeout: float = float(config.get("default_timeout", 30))
+        # exe 索引
+        self.build_exe_index: bool = bool(config.get("build_exe_index", True))
+        self.exe_index_file: str = str(config.get("exe_index_file", "exe_index.json"))
+        self.exe_index: dict[str, str] = {}
+        self._index_task: asyncio.Task | None = None
 
     async def execute(self, method: str, params: dict) -> dict:
         """执行一条指令。method 不在白名单或未实现时抛异常。"""
@@ -243,6 +257,70 @@ class Executor:
             "absolute": str(p.absolute()),
         }
 
+    # ---------- exe 索引（后台构建） ----------
+
+    def start_background_tasks(self) -> None:
+        """启动后台任务（exe 索引构建等）。在事件循环中调用。"""
+        if self.build_exe_index and self._index_task is None:
+            self._index_task = asyncio.create_task(self._build_exe_index())
+
+    async def _build_exe_index(self) -> None:
+        """扫描常见目录生成 exe 名称→路径索引，写入 exe_index.json。"""
+        try:
+            LOG.info("正在构建 exe 索引……")
+            index: dict[str, str] = {}
+            count = 0
+            for root, max_depth in self._index_roots():
+                for exe_path in self._walk_exes(root, max_depth=max_depth):
+                    key = os.path.basename(exe_path).lower()
+                    if key not in index:
+                        index[key] = exe_path
+                        count += 1
+                    if count >= 8000:
+                        break
+                if count >= 8000:
+                    LOG.info("exe 索引已达上限 8000 条，停止扫描")
+                    break
+            self.exe_index = index
+            try:
+                Path(self.exe_index_file).write_text(
+                    json.dumps(index, ensure_ascii=False), encoding="utf-8"
+                )
+                LOG.info(f"exe 索引构建完成：{len(index)} 条 -> {self.exe_index_file}")
+            except Exception as e:
+                LOG.warning(f"exe 索引写入失败: {e}")
+        except Exception as e:
+            LOG.error(f"exe 索引构建失败: {e}")
+
+    def _index_roots(self) -> list[tuple[str, int]]:
+        """返回 (根目录, 最大递归深度) 列表。"""
+        roots: list[tuple[str, int]] = []
+        seen: set[str] = set()
+        for p in os.environ.get("PATH", "").split(os.pathsep):
+            if p and os.path.isdir(p) and os.path.normpath(p) not in seen:
+                seen.add(os.path.normpath(p))
+                roots.append((p, 1))
+        for d in _EXE_INDEX_ROOTS:
+            if d and os.path.isdir(d) and os.path.normpath(d) not in seen:
+                seen.add(os.path.normpath(d))
+                roots.append((d, 1 if "Windows" in d else 3))
+        local_appdata = os.environ.get("LOCALAPPDATA", "")
+        programs_dir = os.path.join(local_appdata, "Programs")
+        if local_appdata and os.path.isdir(programs_dir):
+            roots.append((programs_dir, 3))
+        return roots
+
+    @staticmethod
+    def _walk_exes(root: str, max_depth: int = 3):
+        base_depth = root.rstrip(os.sep).count(os.sep)
+        for dirpath, dirnames, filenames in os.walk(root):
+            depth = dirpath.rstrip(os.sep).count(os.sep) - base_depth
+            if depth >= max_depth:
+                dirnames[:] = []
+            for fn in filenames:
+                if fn.lower().endswith(".exe"):
+                    yield os.path.join(dirpath, fn)
+
     # ---------- app 方法 ----------
 
     async def _exec_app(self, params: dict) -> dict:
@@ -258,6 +336,9 @@ class Executor:
             raise ValueError("params.name 必填")
         args = [str(a) for a in (params.get("args") or [])]
         cwd = params.get("cwd")
+        resolved = self._resolve_exe(name)
+        if resolved:
+            name = resolved
         try:
             proc = subprocess.Popen(
                 [name, *args],
@@ -271,6 +352,48 @@ class Executor:
                 os.startfile(name)
                 return {"ok": True, "launched": name, "note": "os.startfile"}
             raise FileNotFoundError(f"未找到可启动的应用: {name}") from None
+        except OSError as e:
+            # Windows 740：需要管理员权限（"The requested operation requires elevation"）
+            if os.name == "nt" and getattr(e, "winerror", None) == 740:
+                return await self._launch_elevated(name, args, cwd)
+            raise
+
+    def _resolve_exe(self, name: str) -> str | None:
+        """通过 exe 索引或 PATH 把应用名解析为完整路径。"""
+        low = name.lower()
+        if os.sep in name or "/" in name:
+            return None  # 本身就是路径
+        if not low.endswith(".exe"):
+            low += ".exe"
+        path = self.exe_index.get(low)
+        if path:
+            return path
+        return shutil.which(name) or shutil.which(low)
+
+    async def _launch_elevated(self, name: str, args: list[str], cwd: str | None) -> dict:
+        """用 ShellExecuteW(runas) 提权启动（会触发 C 端 UAC 弹窗）。"""
+        import ctypes
+
+        if not os.path.isfile(name):
+            name = self.exe_index.get(name.lower(), name)
+        params = " ".join(args)
+        rc = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", name, params, cwd or None, 1
+        )
+        if rc > 32:
+            return {"ok": True, "launched": name, "elevated": True, "note": "ShellExecute runas"}
+        return {"ok": False, "error": f"提权启动失败 (code={rc})"}
+
+    async def _app_search(self, params: dict) -> dict:
+        """在 exe 索引中按名称模糊搜索应用。"""
+        query = (params.get("query") or "").lower().strip()
+        matches: list[dict] = []
+        for exe_name, exe_path in sorted(self.exe_index.items()):
+            if not query or query in exe_name:
+                matches.append({"name": exe_name, "path": exe_path})
+                if len(matches) >= 50:
+                    break
+        return {"count": len(matches), "query": query, "matches": matches}
 
     async def _app_terminate(self, params: dict) -> dict:
         pid = params.get("pid")

@@ -17,6 +17,9 @@ config.yaml
 *.log
 logs/
 
+# exe 索引（运行时自动生成）
+exe_index.json
+
 # 系统
 .DS_Store
 Thumbs.db
