@@ -91,7 +91,7 @@ class Executor:
         if action == "status":
             return {
                 "status": "ok",
-                "version": "0.1.0",
+                "version": "1.0.0",
                 "device_id": self.device_id,
                 "pid": os.getpid(),
                 "uptime": round(time.time() - self._start_time, 1),
