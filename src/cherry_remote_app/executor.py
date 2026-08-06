@@ -5,10 +5,16 @@
 """
 
 import asyncio
+import base64
 import locale
 import logging
 import os
+import shutil
+import subprocess
 import time
+from pathlib import Path
+
+import psutil
 
 LOG = logging.getLogger("cherry-remote-app.executor")
 
@@ -136,4 +142,181 @@ class Executor:
             },
             "disk": disks,
             "boot_time": psutil.boot_time(),
+        }
+
+    # ---------- file 方法 ----------
+
+    async def _exec_file(self, params: dict) -> dict:
+        action = params.get("action")
+        if not params.get("path"):
+            raise ValueError("params.path 必填")
+        handler = getattr(self, f"_file_{action}", None)
+        if handler is None:
+            raise NotImplementedError(f"file action '{action}' 未实现")
+        return await handler(params)
+
+    async def _file_list(self, params: dict) -> dict:
+        p = Path(params["path"])
+        if not p.exists():
+            raise FileNotFoundError(f"路径不存在: {p}")
+        recursive = bool(params.get("recursive", False))
+        iterator = p.rglob("*") if recursive else p.iterdir()
+        entries = []
+        for item in iterator:
+            try:
+                st = item.stat()
+            except OSError:
+                continue
+            entries.append(
+                {
+                    "name": item.name,
+                    "path": str(item),
+                    "type": "dir" if item.is_dir() else "file",
+                    "size": st.st_size if item.is_file() else 0,
+                    "mtime": st.st_mtime,
+                }
+            )
+        entries.sort(key=lambda e: (e["type"] != "dir", e["name"].lower()))
+        return {"path": str(p), "count": len(entries), "entries": entries}
+
+    async def _file_read(self, params: dict) -> dict:
+        p = Path(params["path"])
+        if not p.is_file():
+            raise FileNotFoundError(f"文件不存在: {p}")
+        data = p.read_bytes()
+        for enc in ("utf-8", locale.getpreferredencoding(False)):
+            try:
+                text = data.decode(enc)
+                return {"path": str(p), "encoding": enc, "size": len(data), "content": text}
+            except UnicodeDecodeError:
+                continue
+        return {
+            "path": str(p),
+            "encoding": "base64",
+            "size": len(data),
+            "content": base64.b64encode(data).decode("ascii"),
+        }
+
+    async def _file_write(self, params: dict) -> dict:
+        p = Path(params["path"])
+        content = params.get("content", "")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if params.get("encoding") == "base64":
+            data = base64.b64decode(content)
+            p.write_bytes(data)
+            return {"path": str(p), "ok": True, "bytes": len(data)}
+        if isinstance(content, str):
+            p.write_text(content, encoding="utf-8")
+            return {"path": str(p), "ok": True, "bytes": len(content.encode("utf-8"))}
+        raise ValueError("params.content 必须为字符串或 base64")
+
+    async def _file_copy(self, params: dict) -> dict:
+        src, dest = params["path"], params.get("dest")
+        if not dest:
+            raise ValueError("params.dest 必填")
+        if Path(src).is_dir():
+            shutil.copytree(src, dest)
+        else:
+            shutil.copy2(src, dest)
+        return {"ok": True, "src": src, "dest": dest}
+
+    async def _file_delete(self, params: dict) -> dict:
+        p = Path(params["path"])
+        if not p.exists():
+            raise FileNotFoundError(f"路径不存在: {p}")
+        if p.is_dir():
+            shutil.rmtree(p)
+        else:
+            p.unlink()
+        return {"ok": True, "deleted": str(p)}
+
+    async def _file_info(self, params: dict) -> dict:
+        p = Path(params["path"])
+        if not p.exists():
+            raise FileNotFoundError(f"路径不存在: {p}")
+        st = p.stat()
+        return {
+            "path": str(p),
+            "type": "dir" if p.is_dir() else "file",
+            "size": st.st_size,
+            "mtime": st.st_mtime,
+            "absolute": str(p.absolute()),
+        }
+
+    # ---------- app 方法 ----------
+
+    async def _exec_app(self, params: dict) -> dict:
+        action = params.get("action")
+        handler = getattr(self, f"_app_{action}", None)
+        if handler is None:
+            raise NotImplementedError(f"app action '{action}' 未实现")
+        return await handler(params)
+
+    async def _app_launch(self, params: dict) -> dict:
+        name = params.get("name")
+        if not name:
+            raise ValueError("params.name 必填")
+        args = [str(a) for a in (params.get("args") or [])]
+        cwd = params.get("cwd")
+        try:
+            proc = subprocess.Popen(
+                [name, *args],
+                cwd=cwd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return {"ok": True, "pid": proc.pid, "launched": name}
+        except FileNotFoundError:
+            if os.name == "nt":
+                os.startfile(name)
+                return {"ok": True, "launched": name, "note": "os.startfile"}
+            raise FileNotFoundError(f"未找到可启动的应用: {name}") from None
+
+    async def _app_terminate(self, params: dict) -> dict:
+        pid = params.get("pid")
+        name = params.get("name")
+        terminated: list[int] = []
+        if pid is not None:
+            proc = psutil.Process(int(pid))
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except (psutil.TimeoutExpired, Exception):
+                proc.kill()
+            terminated.append(int(pid))
+        elif name:
+            target = name.lower()
+            for proc in psutil.process_iter(["pid", "name"]):
+                try:
+                    pname = (proc.info.get("name") or "").lower()
+                except Exception:
+                    continue
+                if target in pname:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=3)
+                    except (psutil.TimeoutExpired, Exception):
+                        proc.kill()
+                    terminated.append(proc.pid)
+        else:
+            raise ValueError("params.pid 或 params.name 必填")
+        return {"ok": True, "terminated": terminated}
+
+    # ---------- screenshot 方法 ----------
+
+    async def _exec_screenshot(self, params: dict) -> dict:
+        import io
+
+        from PIL import ImageGrab
+
+        image = ImageGrab.grab()
+        buf = io.BytesIO()
+        image.save(buf, format="PNG")
+        raw = buf.getvalue()
+        return {
+            "image": base64.b64encode(raw).decode("ascii"),
+            "format": "png",
+            "width": image.width,
+            "height": image.height,
+            "size": len(raw),
         }

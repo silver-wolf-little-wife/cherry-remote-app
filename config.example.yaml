@@ -20,7 +20,11 @@ max_reconnect_delay: 60
 default_timeout: 30
 
 # 指令白名单（仅允许执行以下 method）
+# exec=shell  file=文件操作  app=应用启停  sys=系统信息  screenshot=截屏  ping=连通性
 allowed_actions:
   - exec
   - sys
   - ping
+  - file
+  - app
+  - screenshot
