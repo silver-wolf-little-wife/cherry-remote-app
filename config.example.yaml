@@ -7,6 +7,12 @@ server_url: "ws://127.0.0.1:8765/ws"
 # 认证 token（必须与 B 端插件配置一致）
 auth_token: "change-me"
 
+# wss/TLS：server_url 用 wss:// 时生效
+# ssl_verify: true 校验证书（推荐）；自签名证书可设 false
+# ca_cert: 自定义 CA 证书路径（可选）
+ssl_verify: true
+ca_cert: ""
+
 # 本机设备标识（多设备时用于区分）
 device_id: "home-pc"
 

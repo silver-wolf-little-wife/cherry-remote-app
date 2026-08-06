@@ -49,6 +49,7 @@ class WsClient:
         self.max_reconnect_delay: float = float(config.get("max_reconnect_delay", 60))
         self.executor = Executor(config)
         self._last_recv: float = 0.0
+        self._ssl = self._build_ssl_context(config)
 
     async def run(self) -> None:
         """主循环：连接 → 服务 → 异常重连。"""
@@ -69,10 +70,25 @@ class WsClient:
             LOG.info("将在 %.1f 秒后重连……", delay)
             await asyncio.sleep(delay)
 
+    def _build_ssl_context(self, config: dict):
+        """wss 时构建 ssl 上下文；支持关闭校验与自定义 CA。"""
+        if not self.url.startswith("wss://"):
+            return None
+        import ssl
+
+        ctx = ssl.create_default_context()
+        if not config.get("ssl_verify", True):
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        ca = config.get("ca_cert")
+        if ca:
+            ctx.load_verify_locations(ca)
+        return ctx
+
     async def _connect_once(self) -> None:
         LOG.info("连接 %s ...", self.url)
         async with websockets.connect(
-            self.url, ping_interval=None, max_size=16 * 1024 * 1024
+            self.url, ping_interval=None, max_size=16 * 1024 * 1024, ssl=self._ssl
         ) as ws:
             await self._handshake(ws)
             self._last_recv = time.monotonic()

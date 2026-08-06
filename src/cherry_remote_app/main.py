@@ -7,6 +7,7 @@
 import argparse
 import asyncio
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -15,6 +16,20 @@ import yaml
 from .ws_client import WsClient
 
 LOG = logging.getLogger("cherry-remote-app")
+
+
+def _app_dir() -> str:
+    """返回应用目录：PyInstaller 打包后为 exe 所在目录，源码运行为当前目录。"""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.abspath(".")
+
+
+def _resolve_rel(path: str) -> str:
+    """相对路径基于应用目录解析，绝对路径原样返回。"""
+    if os.path.isabs(path):
+        return path
+    return os.path.join(_app_dir(), path)
 
 
 def load_config(path: str) -> dict:
@@ -56,19 +71,24 @@ def main() -> None:
         description="Cherry Remote 远程操控执行器（纯执行器，无 AI）",
     )
     parser.add_argument(
-        "-c", "--config", default="config.yaml", help="配置文件路径（默认 config.yaml）"
+        "-c",
+        "--config",
+        default=os.path.join(_app_dir(), "config.yaml"),
+        help="配置文件路径（默认应用目录下 config.yaml）",
     )
     parser.add_argument("--log-level", default="INFO", help="日志级别（DEBUG/INFO/WARNING/ERROR）")
     parser.add_argument(
         "--log-file",
-        default="logs/cherry-remote-app.log",
-        help="日志文件路径（默认 logs/cherry-remote-app.log；设空则仅输出控制台）",
+        default=os.path.join(_app_dir(), "logs", "cherry-remote-app.log"),
+        help="日志文件路径（默认应用目录下 logs/cherry-remote-app.log；设空则仅输出控制台）",
     )
     args = parser.parse_args()
 
     setup_logging(args.log_level, log_file=args.log_file or None)
     if not Path(args.config).is_file():
-        LOG.error("配置文件不存在: %s（可参考 config.example.yaml 创建）", args.config)
+        LOG.error(
+            "配置文件不存在: %s（可将 config.example.yaml 复制为 config.yaml）", args.config
+        )
         sys.exit(1)
 
     try:
@@ -76,6 +96,9 @@ def main() -> None:
     except Exception as e:
         LOG.error("加载配置失败: %s", e)
         sys.exit(1)
+
+    # 相对路径统一基于应用目录解析（打包成 exe 后不依赖启动目录）
+    cfg["exe_index_file"] = _resolve_rel(cfg.get("exe_index_file", "exe_index.json"))
 
     client = WsClient(cfg)
     try:

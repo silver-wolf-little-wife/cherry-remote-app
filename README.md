@@ -33,6 +33,8 @@ python -m cherry_remote_app -c config.yaml
 
 要求 Python 3.10+。
 
+> 成品部署（打包 exe / 注册 Windows 服务 / TLS）：见 [`docs/DEPLOY.md`](docs/DEPLOY.md)。
+
 ## 配置项
 
 见 [`config.example.yaml`](config.example.yaml)。关键项：
