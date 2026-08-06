@@ -25,6 +25,7 @@ def _summarize_data(data, method: str) -> str:
     if method == "exec":
         return (
             f"exit={data.get('exit_code')} timed_out={data.get('timed_out')} "
+            f"truncated={data.get('truncated')} "
             f"stdout={_truncate(data.get('stdout', ''), 120)} "
             f"stderr={_truncate(data.get('stderr', ''), 120)}"
         )
@@ -63,7 +64,9 @@ class WsClient:
 
     async def _connect_once(self) -> None:
         LOG.info("连接 %s ...", self.url)
-        async with websockets.connect(self.url, ping_interval=None) as ws:
+        async with websockets.connect(
+            self.url, ping_interval=None, max_size=16 * 1024 * 1024
+        ) as ws:
             await self._handshake(ws)
             self._last_recv = time.monotonic()
             LOG.info("已连接 B 端服务端，device_id=%s", self.device_id)

@@ -19,13 +19,16 @@ import psutil
 
 LOG = logging.getLogger("cherry-remote-app.executor")
 
-# exe 索引默认扫描根目录
+# exe 索引默认扫描根目录（旧版，已由 _index_roots 枚举所有磁盘替代）
 _EXE_INDEX_ROOTS = (
     r"C:\Windows\System32",
     r"C:\Windows\SysWOW64",
     r"C:\Program Files",
     r"C:\Program Files (x86)",
 )
+
+# exec 输出单通道截断上限（字符），防止超大输出撑爆 WebSocket 消息
+_MAX_OUTPUT_LEN = 64 * 1024
 
 
 def _decode_output(data: bytes) -> str:
@@ -44,6 +47,13 @@ def _decode_output(data: bytes) -> str:
         return data.decode(enc)
     except UnicodeDecodeError:
         return data.decode("utf-8", errors="replace")
+
+
+def _cap_text(text: str, limit: int = _MAX_OUTPUT_LEN) -> tuple[str, bool]:
+    """超长输出截断，返回 (文本, 是否截断)。"""
+    if len(text) <= limit:
+        return text, False
+    return text[:limit] + "\n...[输出已截断]", True
 
 
 class Executor:
@@ -99,11 +109,14 @@ class Executor:
             timed_out = True
         elapsed = round(time.monotonic() - start, 3)
 
+        out_text, out_truncated = _cap_text(_decode_output(stdout))
+        err_text, err_truncated = _cap_text(_decode_output(stderr))
         return {
-            "stdout": _decode_output(stdout),
-            "stderr": _decode_output(stderr),
+            "stdout": out_text,
+            "stderr": err_text,
             "exit_code": proc.returncode,
             "timed_out": timed_out,
+            "truncated": out_truncated or err_truncated,
             "elapsed": elapsed,
         }
 
@@ -293,22 +306,47 @@ class Executor:
             LOG.error(f"exe 索引构建失败: {e}")
 
     def _index_roots(self) -> list[tuple[str, int]]:
-        """返回 (根目录, 最大递归深度) 列表。"""
+        """返回 (根目录, 最大递归深度) 列表。
+
+        覆盖：PATH、Windows 系统目录、所有磁盘的 Program Files、LOCALAPPDATA\\Programs。
+        """
         roots: list[tuple[str, int]] = []
         seen: set[str] = set()
+        # PATH 目录
         for p in os.environ.get("PATH", "").split(os.pathsep):
             if p and os.path.isdir(p) and os.path.normpath(p) not in seen:
                 seen.add(os.path.normpath(p))
                 roots.append((p, 1))
-        for d in _EXE_INDEX_ROOTS:
+        # Windows 系统目录
+        for d in (r"C:\Windows\System32", r"C:\Windows\SysWOW64"):
             if d and os.path.isdir(d) and os.path.normpath(d) not in seen:
                 seen.add(os.path.normpath(d))
-                roots.append((d, 1 if "Windows" in d else 3))
+                roots.append((d, 1))
+        # 所有固定磁盘的 Program Files / Program Files (x86)
+        for drive in self._fixed_drives():
+            for sub in ("Program Files", "Program Files (x86)"):
+                d = os.path.join(drive, sub)
+                if os.path.isdir(d) and os.path.normpath(d) not in seen:
+                    seen.add(os.path.normpath(d))
+                    roots.append((d, 3))
+        # LOCALAPPDATA\Programs（许多按用户安装的应用）
         local_appdata = os.environ.get("LOCALAPPDATA", "")
         programs_dir = os.path.join(local_appdata, "Programs")
         if local_appdata and os.path.isdir(programs_dir):
             roots.append((programs_dir, 3))
         return roots
+
+    @staticmethod
+    def _fixed_drives() -> list[str]:
+        """枚举所有存在的磁盘盘符（C:、D:、E: …）。"""
+        import string
+
+        drives: list[str] = []
+        for letter in string.ascii_uppercase:
+            d = f"{letter}:\\"
+            if os.path.exists(d):
+                drives.append(d)
+        return drives
 
     @staticmethod
     def _walk_exes(root: str, max_depth: int = 3):
@@ -339,6 +377,12 @@ class Executor:
         resolved = self._resolve_exe(name)
         if resolved:
             name = resolved
+        # .lnk 快捷方式不能用 Popen 直接启动，交给 os.startfile 解析
+        if name.lower().endswith(".lnk"):
+            if os.name == "nt":
+                os.startfile(name)
+                return {"ok": True, "launched": name, "note": "os.startfile(.lnk)"}
+            raise ValueError("仅 Windows 支持 .lnk 快捷方式")
         try:
             proc = subprocess.Popen(
                 [name, *args],
