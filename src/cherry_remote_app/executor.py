@@ -5,11 +5,30 @@
 """
 
 import asyncio
+import locale
 import logging
 import os
 import time
 
 LOG = logging.getLogger("cherry-remote-app.executor")
+
+
+def _decode_output(data: bytes) -> str:
+    """解码子进程输出。
+
+    Windows 控制台命令（ping/dir 等）按系统 ANSI 代码页输出（中文系统为 GBK），
+    若硬按 UTF-8 解码会产生乱码。此处 Windows 优先用 locale 编码，其他平台用 UTF-8。
+    """
+    if not data:
+        return ""
+    if os.name == "nt":
+        enc = locale.getpreferredencoding(False) or "utf-8"
+    else:
+        enc = "utf-8"
+    try:
+        return data.decode(enc)
+    except UnicodeDecodeError:
+        return data.decode("utf-8", errors="replace")
 
 
 class Executor:
@@ -61,8 +80,8 @@ class Executor:
         elapsed = round(time.monotonic() - start, 3)
 
         return {
-            "stdout": stdout.decode("utf-8", errors="replace"),
-            "stderr": stderr.decode("utf-8", errors="replace"),
+            "stdout": _decode_output(stdout),
+            "stderr": _decode_output(stderr),
             "exit_code": proc.returncode,
             "timed_out": timed_out,
             "elapsed": elapsed,
