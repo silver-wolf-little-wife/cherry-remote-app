@@ -11,12 +11,12 @@
 
 # cherry-remote-app
 
-Cherry Remote 远程操控系统 · **C 端执行器**。
+Cherry Remote 远程操控系统 · **C 端执行器**。当前版本 **v1.2.0**。
 
 部署在目标电脑（C地·家庭局域网内 PC）上的常驻服务，**纯执行器，无任何 AI/LLM 逻辑**。
 
 - 主动外连 B 端 AstrBot 插件的 WebSocket 服务（穿透 NAT）。
-- 接收指令并执行：`exec`（shell）、`sys`（系统信息）、`ping`（连通性）。
+- 接收指令并执行：`exec`（shell）、`sys`（系统信息）、`ping`（连通性）、`file`（文件操作）、`app`（应用启停）、`screenshot`（截屏）、`file_pull`（流式文件拉取）。
 - 回传**原始结果**给 B 端，由 B 端 AI 研判后回复用户。
 
 ## 架构
@@ -46,6 +46,17 @@ python -m cherry_remote_app -c config.yaml
 
 > 成品部署（打包 exe / 注册 Windows 服务 / TLS）：见 [`docs/DEPLOY.md`](docs/DEPLOY.md)。
 
+## 测试
+
+仓库内置两套回归测试（无需 B 端在线，本地模拟全链路）：
+
+```bash
+python test_file_pull.py   # file_pull：握手/单帧/流式分块 sha256/缺文件/超限/普通指令回归
+python test_smoke.py       # Executor 全方法冒烟：exec/sys/ping/file/app/screenshot/system/白名单
+```
+
+全绿输出 `ALL PASS`。改动代码后建议先跑这两套。
+
 ## 配置项
 
 见 [`config.example.yaml`](config.example.yaml)。关键项：
@@ -55,7 +66,8 @@ python -m cherry_remote_app -c config.yaml
 | `server_url` | B 端 WebSocket 地址，如 `ws://your-server:8765/ws` |
 | `auth_token` | 认证 token，与 B 端插件一致 |
 | `device_id` | 本机标识，多设备时用于区分 |
-| `allowed_actions` | 指令白名单，白名单外一律拒绝 |
+| `allowed_actions` | 指令白名单，白名单外一律拒绝（含 `file_pull`） |
+| `max_pull_size` | 单次文件拉取大小上限（字节，默认 200MB） |
 
 ## 通信协议
 

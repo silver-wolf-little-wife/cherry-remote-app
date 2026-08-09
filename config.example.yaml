@@ -31,13 +31,18 @@ build_exe_index: true
 # exe 索引文件路径（相对启动目录）
 exe_index_file: "exe_index.json"
 
+# 单次文件拉取大小上限（字节），超过 pull_threshold 的文件走流式分块传输
+max_pull_size: 209715200
+
 # 指令白名单（仅允许执行以下 method）
-# exec=shell  file=文件操作  app=应用启停  sys=系统信息  screenshot=截屏  ping=连通性  system=急停/状态
+# exec=shell  file=文件操作  app=应用启停  sys=系统信息  screenshot=截屏  ping=连通性
+# file_pull=流式文件拉取  system=急停/状态
 allowed_actions:
   - exec
   - sys
   - ping
   - file
+  - file_pull
   - app
   - screenshot
   - system

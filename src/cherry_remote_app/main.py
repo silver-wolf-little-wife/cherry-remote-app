@@ -45,7 +45,8 @@ def load_config(path: str) -> dict:
         "heartbeat_interval": 15,
         "max_reconnect_delay": 60,
         "default_timeout": 30,
-        "allowed_actions": ["exec", "sys", "ping"],
+        "allowed_actions": ["exec", "sys", "ping", "file", "file_pull", "app", "screenshot", "system"],
+        "max_pull_size": 200 * 1024 * 1024,
     }
     defaults.update({k: v for k, v in cfg.items() if v is not None})
     return defaults

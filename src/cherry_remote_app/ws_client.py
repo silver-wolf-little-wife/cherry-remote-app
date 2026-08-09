@@ -110,7 +110,7 @@ class WsClient:
             "type": "hello",
             "token": self.token,
             "device_id": self.device_id,
-            "client_version": "1.0.0",
+            "client_version": "1.2.0",
         }
         await ws.send(json.dumps(hello, ensure_ascii=False))
         ack = json.loads(await asyncio.wait_for(ws.recv(), timeout=15))
@@ -144,7 +144,15 @@ class WsClient:
             json.dumps(params, ensure_ascii=False, default=str),
         )
         try:
-            data = await self.executor.execute(method, params)
+            if method == "file_pull":
+                # 流式方法：把 ws.send 包装成回调，executor 分块推送 file_data 帧
+                async def _send_frame(frame: dict) -> None:
+                    frame["id"] = rid  # file_data 帧必须携带请求 id，供 B 端关联传输
+                    await ws.send(json.dumps(frame, ensure_ascii=False, default=str))
+
+                data = await self.executor.execute(method, params, send_frame=_send_frame)
+            else:
+                data = await self.executor.execute(method, params)
             elapsed = round(time.monotonic() - start, 3)
             resp = {"type": "response", "id": rid, "ok": True, "data": data, "error": None}
             LOG.info(

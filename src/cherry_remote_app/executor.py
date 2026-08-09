@@ -59,9 +59,11 @@ def _cap_text(text: str, limit: int = _MAX_OUTPUT_LEN) -> tuple[str, bool]:
 class Executor:
     def __init__(self, config: dict):
         self.allowed_actions: set[str] = set(
-            config.get("allowed_actions", ["exec", "sys", "ping", "file", "app", "screenshot", "system"])
+            config.get("allowed_actions", ["exec", "sys", "ping", "file", "file_pull", "app", "screenshot", "system"])
         )
         self.default_timeout: float = float(config.get("default_timeout", 30))
+        # 单次拉取文件大小上限（字节），默认 200MB
+        self.max_pull_size: int = int(config.get("max_pull_size", 200 * 1024 * 1024))
         self.device_id: str = str(config.get("device_id", "unknown"))
         # 急停开关：置 true 后拒绝执行一切指令
         self.emergency_stop: bool = bool(config.get("emergency_stop", False))
@@ -73,8 +75,11 @@ class Executor:
         self.exe_index: dict[str, str] = {}
         self._index_task: asyncio.Task | None = None
 
-    async def execute(self, method: str, params: dict) -> dict:
-        """执行一条指令。method 不在白名单或未实现时抛异常。"""
+    async def execute(self, method: str, params: dict, send_frame=None) -> dict:
+        """执行一条指令。method 不在白名单或未实现时抛异常。
+
+        send_frame：可选回调，流式方法（file_pull）用它向 B 端分块推送数据帧。
+        """
         if self.emergency_stop:
             raise PermissionError("紧急停机已启用（emergency_stop），拒绝执行所有指令")
         if method not in self.allowed_actions:
@@ -82,6 +87,10 @@ class Executor:
         handler = getattr(self, f"_exec_{method}", None)
         if handler is None:
             raise NotImplementedError(f"method '{method}' 未实现")
+        if send_frame is not None:
+            return await handler(params or {}, send_frame)
+        if method == "file_pull":
+            raise RuntimeError("file_pull 必须经流式通道调用（缺少 send_frame 回调）")
         return await handler(params or {})
 
     # ---------- system 方法（急停/状态） ----------
@@ -91,7 +100,7 @@ class Executor:
         if action == "status":
             return {
                 "status": "ok",
-                "version": "1.0.0",
+                "version": "1.2.0",
                 "device_id": self.device_id,
                 "pid": os.getpid(),
                 "uptime": round(time.time() - self._start_time, 1),
@@ -295,6 +304,44 @@ class Executor:
             "size": st.st_size,
             "mtime": st.st_mtime,
             "absolute": str(p.absolute()),
+        }
+
+    async def _exec_file_pull(self, params: dict, send_frame) -> dict:
+        """分块流式读取文件：逐块 base64 经 send_frame 推送 file_data 帧，返回元数据。
+
+        用于 B 端拉取大文件：数据帧直接落盘在 B 端，不经过 LLM 上下文。
+        """
+        import hashlib
+
+        p = Path(params["path"])
+        if not p.is_file():
+            raise FileNotFoundError(f"文件不存在: {p}")
+        size = p.stat().st_size
+        if self.max_pull_size and size > self.max_pull_size:
+            raise ValueError(f"文件大小 {size} 超过 max_pull_size={self.max_pull_size}")
+        chunk_size = max(64 * 1024, int(params.get("chunk_size", 1024 * 1024)))
+        total = (size + chunk_size - 1) // chunk_size
+        sha = hashlib.sha256()
+        with open(p, "rb") as f:
+            for index in range(total):
+                data = f.read(chunk_size)
+                if not data:
+                    break
+                sha.update(data)
+                await send_frame(
+                    {
+                        "type": "file_data",
+                        "index": index,
+                        "total": total,
+                        "data": base64.b64encode(data).decode("ascii"),
+                    }
+                )
+        return {
+            "path": str(p),
+            "name": p.name,
+            "size": size,
+            "chunks": total,
+            "sha256": sha.hexdigest(),
         }
 
     # ---------- exe 索引（后台构建） ----------
