@@ -28,23 +28,41 @@ Cherry Remote 远程操控系统 · **C 端执行器**。当前版本 **v1.2.0**
 
 智能全部在 B 端；本程序只执行、不思考。
 
-## 快速开始
+## 部署（推荐：Release 成品包）
+
+无需安装 Python，从 [Releases](https://github.com/silver-wolf-little-wife/cherry-remote-app/releases) 下载最新版 `cherry-remote-app-vX.Y.Z-win64.zip`：
+
+1. **解压** 到任意目录（如 `D:\cherry-remote-app\`），得到两个文件：
+   - `cherry-remote-app.exe` —— 主程序
+   - `config.example.yaml` —— 配置样例
+2. **重命名配置文件**：把 `config.example.yaml` 改名为 `config.yaml`
+   ```bash
+   ren config.example.yaml config.yaml
+   ```
+3. **编辑 `config.yaml`**（记事本打开即可），至少填写以下三项：
+   ```yaml
+   server_url: "ws://你的服务器:8765/ws"   # B 端 AstrBot 插件 WebSocket 地址
+   auth_token: "与B端插件一致的token"       # 必须与 B 端插件 auth_token 完全相同
+   device_id: "home-pc"                    # 本机标识，多设备时用于区分
+   ```
+4. **运行**：双击 `cherry-remote-app.exe` 即可启动。
+
+> 开机自启 / 注册 Windows 服务 / wss TLS 部署：见 [`docs/DEPLOY.md`](docs/DEPLOY.md)。
+
+## 从源码运行（开发）
 
 ```bash
 # 1. 安装依赖
 pip install -r requirements.txt
 
-# 2. 创建配置
+# 2. 创建配置（同样记得先重命名）
 cp config.example.yaml config.yaml
-#    编辑 config.yaml：server_url / auth_token / device_id
 
 # 3. 运行
 python -m cherry_remote_app -c config.yaml
 ```
 
 要求 Python 3.10+。
-
-> 成品部署（打包 exe / 注册 Windows 服务 / TLS）：见 [`docs/DEPLOY.md`](docs/DEPLOY.md)。
 
 ## 测试
 
