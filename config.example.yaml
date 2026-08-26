@@ -26,9 +26,11 @@ max_reconnect_delay: 60
 default_timeout: 30
 
 # 启动时是否构建 exe 索引（供 app 工具查找/搜索应用）
+# 索引含两层：文件名(小写)->路径；产品名/文件说明(小写)->[{file,path}]，
+# 支持按用户认知的应用名查找（如“米哈游启动器”-> HYP.exe）
 build_exe_index: true
 
-# exe 索引文件路径（相对启动目录）
+# exe 索引文件路径（相对启动目录）；格式 v2：文件名映射 + _product 显示名映射 + _meta
 exe_index_file: "exe_index.json"
 
 # 单次文件拉取大小上限（字节），超过 pull_threshold 的文件走流式分块传输

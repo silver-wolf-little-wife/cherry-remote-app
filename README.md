@@ -11,12 +11,13 @@
 
 # cherry-remote-app
 
-Cherry Remote 远程操控系统 · **C 端执行器**。当前版本 **v1.2.0**。
+Cherry Remote 远程操控系统 · **C 端执行器**。当前版本 **v1.3.0**。
 
 部署在目标电脑（C地·家庭局域网内 PC）上的常驻服务，**纯执行器，无任何 AI/LLM 逻辑**。
 
 - 主动外连 B 端 AstrBot 插件的 WebSocket 服务（穿透 NAT）。
 - 接收指令并执行：`exec`（shell）、`sys`（系统信息）、`ping`（连通性）、`file`（文件操作）、`app`（应用启停）、`screenshot`（截屏）、`file_pull`（流式文件拉取）。
+- **exe 索引（含显示名）**：启动时后台扫描生成 `exe_index.json`（文件名→路径 + 产品名/文件说明→文件与路径）。`app` 的启动/搜索支持按**用户认知的应用名**解析，如「打开米哈游启动器」→ 产品名为“米哈游启动器”的 `HYP.exe`、`ZenlessZoneZero.exe` 的产品名“绝区零”等。
 - 回传**原始结果**给 B 端，由 B 端 AI 研判后回复用户。
 
 ## 架构
@@ -71,6 +72,7 @@ python -m cherry_remote_app -c config.yaml
 ```bash
 python test_file_pull.py   # file_pull：握手/单帧/流式分块 sha256/缺文件/超限/普通指令回归
 python test_smoke.py       # Executor 全方法冒烟：exec/sys/ping/file/app/screenshot/system/白名单
+python test_exe_index.py   # exe 索引：版本资源读取/显示名回退链/索引 JSON/显示名解析/app search/旧索引合并
 ```
 
 全绿输出 `ALL PASS`。改动代码后建议先跑这两套。
@@ -84,6 +86,8 @@ python test_smoke.py       # Executor 全方法冒烟：exec/sys/ping/file/app/s
 | `server_url` | B 端 WebSocket 地址，如 `ws://your-server:8765/ws` |
 | `auth_token` | 认证 token，与 B 端插件一致 |
 | `device_id` | 本机标识，多设备时用于区分 |
+| `build_exe_index` | 启动时构建 exe 索引（文件名 + 产品名/文件说明显示名） |
+| `exe_index_file` | 索引输出路径（格式 v2，含 `_product` 显示名映射与 `_meta`） |
 | `allowed_actions` | 指令白名单，白名单外一律拒绝（含 `file_pull`） |
 | `max_pull_size` | 单次文件拉取大小上限（字节，默认 200MB） |
 

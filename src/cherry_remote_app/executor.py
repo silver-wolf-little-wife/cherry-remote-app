@@ -30,6 +30,79 @@ _EXE_INDEX_ROOTS = (
 # exec 输出单通道截断上限（字符），防止超大输出撑爆 WebSocket 消息
 _MAX_OUTPUT_LEN = 64 * 1024
 
+# exe 索引条目上限（文件名索引）
+_EXE_INDEX_LIMIT = 8000
+# 显示名别名索引上限（产品名/文件说明）
+_PRODUCT_INDEX_LIMIT = 4000
+# 单个别名最多对应的路径数，防止“Microsoft® Windows® Operating System”这类通用名占满索引
+_PRODUCT_PATHS_LIMIT = 8
+# 无区分度的通用产品名黑名单（小写），不进入显示名别名索引
+_GENERIC_PRODUCT_NAMES = frozenset({"microsoft® windows® operating system"})
+
+
+def _normalize_alias(value: str) -> str:
+    """规范化显示名别名：去首尾空白、压缩连续空白、转小写（与文件名索引保持一致）。"""
+    return " ".join(value.strip().lower().split())
+
+
+def _read_exe_version_info(path: str) -> dict[str, str] | None:
+    """读取 PE 版本资源（产品名称/文件说明等），供显示名索引使用。
+
+    纯 ctypes 实现（调用 Windows version.dll），无第三方依赖；
+    非 Windows、无版本资源或读取失败时返回 None。
+    """
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    try:
+        ver = ctypes.WinDLL("version", use_last_error=True)
+        size = ver.GetFileVersionInfoSizeW(ctypes.c_wchar_p(path), None)
+        if not size:
+            return None
+        buf = ctypes.create_string_buffer(size)
+        if not ver.GetFileVersionInfoW(ctypes.c_wchar_p(path), 0, size, buf):
+            return None
+
+        def _query(subblock: str) -> str | None:
+            ptr = ctypes.c_void_p()
+            length = wintypes.DWORD()
+            if not ver.VerQueryValueW(buf, subblock, ctypes.byref(ptr), ctypes.byref(length)):
+                return None
+            value = ctypes.cast(ptr, ctypes.c_wchar_p).value
+            return value.strip() if value else None
+
+        # 翻译表决定 StringFileInfo 的语言/代码页段（如 040904B0），可能有多段
+        ptr = ctypes.c_void_p()
+        length = wintypes.DWORD()
+        if not ver.VerQueryValueW(buf, r"\VarFileInfo\Translation", ctypes.byref(ptr), ctypes.byref(length)):
+            return None
+        words = ctypes.cast(ptr, ctypes.POINTER(wintypes.WORD))
+        fields = (
+            "ProductName",
+            "FileDescription",
+            "CompanyName",
+            "FileVersion",
+            "ProductVersion",
+            "OriginalFilename",
+            "InternalName",
+            "LegalCopyright",
+        )
+        info: dict[str, str] = {}
+        for i in range(length.value // 4):
+            lang, codepage = words[2 * i], words[2 * i + 1]
+            prefix = f"\\StringFileInfo\\{lang:04X}{codepage:04X}"
+            for field in fields:
+                if field in info:
+                    continue
+                value = _query(f"{prefix}\\{field}")
+                if value:
+                    info[field] = value
+        return info or None
+    except Exception:
+        return None
+
 
 def _decode_output(data: bytes) -> str:
     """解码子进程输出。
@@ -72,7 +145,11 @@ class Executor:
         # exe 索引
         self.build_exe_index: bool = bool(config.get("build_exe_index", True))
         self.exe_index_file: str = str(config.get("exe_index_file", "exe_index.json"))
+        # 文件名(小写) -> 完整路径
         self.exe_index: dict[str, str] = {}
+        # 显示名别名索引：产品名/文件说明(小写) -> [完整路径, ...]
+        # 解决“exe 文件名与用户认知的应用名不一致”（如 HYP.exe 的产品名是“米哈游启动器”）
+        self.exe_product_index: dict[str, list[str]] = {}
         self._index_task: asyncio.Task | None = None
 
     async def execute(self, method: str, params: dict, send_frame=None) -> dict:
@@ -100,12 +177,13 @@ class Executor:
         if action == "status":
             return {
                 "status": "ok",
-                "version": "1.2.0",
+                "version": "1.3.0",
                 "device_id": self.device_id,
                 "pid": os.getpid(),
                 "uptime": round(time.time() - self._start_time, 1),
                 "emergency_stop": self.emergency_stop,
                 "exe_index_entries": len(self.exe_index),
+                "exe_product_entries": len(self.exe_product_index),
                 "allowed_actions": sorted(self.allowed_actions),
             }
         if action == "stop":
@@ -352,32 +430,112 @@ class Executor:
             self._index_task = asyncio.create_task(self._build_exe_index())
 
     async def _build_exe_index(self) -> None:
-        """扫描常见目录生成 exe 名称→路径索引，写入 exe_index.json。"""
+        """扫描常见目录生成 exe 索引并写入 exe_index.json。
+
+        两层索引：
+        1. 文件名(小写) -> 完整路径（原有，按文件名查找/启动）；
+        2. 产品名/文件说明(小写) -> [{file, path}]（新增，让“用户认知的应用名”
+           也能对应到文件位置与文件名，解决文件名与应用名不一致的问题）。
+
+        扫描在后台线程执行，避免阻塞事件循环（心跳/指令处理）。
+        """
         try:
             LOG.info("正在构建 exe 索引……")
-            index: dict[str, str] = {}
-            count = 0
-            for root, max_depth in self._index_roots():
-                for exe_path in self._walk_exes(root, max_depth=max_depth):
-                    key = os.path.basename(exe_path).lower()
-                    if key not in index:
-                        index[key] = exe_path
-                        count += 1
-                    if count >= 8000:
-                        break
-                if count >= 8000:
-                    LOG.info("exe 索引已达上限 8000 条，停止扫描")
-                    break
+            index, product_index = await asyncio.to_thread(self._scan_exe_index)
             self.exe_index = index
+            self.exe_product_index = product_index
+            payload: dict = dict(index)
+            payload["_product"] = {
+                alias: [{"file": os.path.basename(p), "path": p} for p in paths]
+                for alias, paths in sorted(product_index.items())
+            }
+            payload["_meta"] = {
+                "version": 2,
+                "built_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "exe_count": len(index),
+                "product_count": len(product_index),
+                "note": (
+                    "顶层键为 exe 文件名(小写)->完整路径；_product 为产品名称/文件说明(小写)->[{file,path}]，"
+                    "用于按用户认知的应用名查找。回退链：文件属性里的产品名称(ProductName)缺失或为空时，"
+                    "回退到文件说明(FileDescription)；两者皆无则仅保留文件名条目。"
+                ),
+            }
             try:
                 Path(self.exe_index_file).write_text(
-                    json.dumps(index, ensure_ascii=False), encoding="utf-8"
+                    json.dumps(payload, ensure_ascii=False), encoding="utf-8"
                 )
-                LOG.info(f"exe 索引构建完成：{len(index)} 条 -> {self.exe_index_file}")
+                LOG.info(
+                    f"exe 索引构建完成：{len(index)} 条文件名 + {len(product_index)} 条显示名 -> {self.exe_index_file}"
+                )
             except Exception as e:
                 LOG.warning(f"exe 索引写入失败: {e}")
         except Exception as e:
             LOG.error(f"exe 索引构建失败: {e}")
+
+    def _scan_exe_index(self) -> tuple[dict[str, str], dict[str, list[str]]]:
+        """同步扫描，返回 (文件名索引, 显示名索引)。在后台线程中执行。"""
+        index: dict[str, str] = {}
+        product_index: dict[str, list[str]] = {}
+        count = 0
+        for root, max_depth in self._index_roots():
+            for exe_path in self._walk_exes(root, max_depth=max_depth):
+                key = os.path.basename(exe_path).lower()
+                if key not in index:
+                    index[key] = exe_path
+                    count += 1
+                self._index_product_aliases(exe_path, product_index)
+                if count >= _EXE_INDEX_LIMIT:
+                    break
+            if count >= _EXE_INDEX_LIMIT:
+                LOG.info("exe 索引已达上限 %d 条，停止扫描", _EXE_INDEX_LIMIT)
+                break
+        # 保留旧索引中仍有效的条目（历史手工添加、扫描范围外的路径），防止重启丢失
+        self._merge_legacy_index(index)
+        return index, product_index
+
+    def _index_product_aliases(self, exe_path: str, product_index: dict[str, list[str]]) -> None:
+        """把 exe 的产品名/文件说明加入显示名别名索引。
+
+        回退链：ProductName(产品名称) -> FileDescription(文件说明)。
+        - 字段不叫 ProductName / 字段为空 / 无版本资源：回退到文件说明；
+        - 两者都没有：跳过别名，文件名索引仍然兜底（app search 按文件名仍能找到）。
+        """
+        if len(product_index) >= _PRODUCT_INDEX_LIMIT:
+            return
+        info = _read_exe_version_info(exe_path)
+        if not info:
+            return
+        stem = os.path.splitext(os.path.basename(exe_path))[0].lower()
+        for value in (info.get("ProductName"), info.get("FileDescription")):
+            key = _normalize_alias(value) if value else ""
+            # 跳过：空值、与文件名重复（无补充价值）、通用无区分度产品名
+            if not key or key == stem or key in _GENERIC_PRODUCT_NAMES:
+                continue
+            paths = product_index.setdefault(key, [])
+            # 路径按大小写不敏感去重（Windows 路径大小写不敏感，如 system32/System32）
+            if any(os.path.normcase(p) == os.path.normcase(exe_path) for p in paths):
+                continue
+            if len(paths) < _PRODUCT_PATHS_LIMIT:
+                paths.append(exe_path)
+
+    def _merge_legacy_index(self, index: dict[str, str]) -> None:
+        """把旧版 exe_index.json 中仍有效（文件存在）的条目合并进新索引。"""
+        try:
+            old_path = Path(self.exe_index_file)
+            if not old_path.is_file():
+                return
+            old = json.loads(old_path.read_text(encoding="utf-8"))
+            if not isinstance(old, dict):
+                return
+            for key, value in old.items():
+                if not isinstance(key, str) or not isinstance(value, str):
+                    continue  # 跳过 _product/_meta 等结构
+                if key.startswith("_") or key in index:
+                    continue
+                if os.path.isfile(value):
+                    index[key] = value
+        except Exception as e:
+            LOG.warning(f"合并旧版 exe 索引失败（忽略）: {e}")
 
     def _index_roots(self) -> list[tuple[str, int]]:
         """返回 (根目录, 最大递归深度) 列表。
@@ -477,11 +635,22 @@ class Executor:
             raise
 
     def _resolve_exe(self, name: str) -> str | None:
-        """通过 exe 索引或 PATH 把应用名解析为完整路径。"""
-        low = name.lower()
+        """把应用名解析为完整路径。
+
+        解析顺序：产品名/文件说明（用户认知的显示名，如“米哈游启动器”）->
+        exe 文件名 -> PATH。
+        """
+        name = (name or "").strip()
+        if not name:
+            return None
         if os.sep in name or "/" in name:
             return None  # 本身就是路径
+        low = name.lower()
         if not low.endswith(".exe"):
+            # 先按显示名（产品名/文件说明）匹配，解决文件名与用户认知不一致的问题
+            display_paths = self.exe_product_index.get(low)
+            if display_paths:
+                return display_paths[0]
             low += ".exe"
         path = self.exe_index.get(low)
         if path:
@@ -493,7 +662,7 @@ class Executor:
         import ctypes
 
         if not os.path.isfile(name):
-            name = self.exe_index.get(name.lower(), name)
+            name = self._resolve_exe(name) or name
         params = " ".join(args)
         rc = ctypes.windll.shell32.ShellExecuteW(
             None, "runas", name, params, cwd or None, 1
@@ -503,12 +672,39 @@ class Executor:
         return {"ok": False, "error": f"提权启动失败 (code={rc})"}
 
     async def _app_search(self, params: dict) -> dict:
-        """在 exe 索引中按名称模糊搜索应用。"""
+        """在 exe 索引中按名称模糊搜索应用。
+
+        同时匹配 exe 文件名与产品名/文件说明（显示名），返回 matched_on 字段
+        说明命中的索引类型（filename=文件名 / product=产品名或文件说明）。
+        """
         query = (params.get("query") or "").lower().strip()
         matches: list[dict] = []
+        seen: set[str] = set()
+
+        def _add(name: str, path: str, matched_on: str, product: str | None = None) -> None:
+            if path.lower() in seen:
+                return
+            seen.add(path.lower())
+            item: dict = {"name": name, "path": path, "matched_on": matched_on}
+            if product:
+                item["product"] = product
+            matches.append(item)
+
+        # 1) 文件名匹配（原有行为）
         for exe_name, exe_path in sorted(self.exe_index.items()):
             if not query or query in exe_name:
-                matches.append({"name": exe_name, "path": exe_path})
+                _add(exe_name, exe_path, "filename")
+                if len(matches) >= 50:
+                    break
+        # 2) 产品名/文件说明匹配（用户认知的显示名）
+        if len(matches) < 50:
+            for alias, paths in sorted(self.exe_product_index.items()):
+                if query and query not in alias:
+                    continue
+                for p in paths:
+                    _add(os.path.basename(p), p, "product", product=alias)
+                    if len(matches) >= 50:
+                        break
                 if len(matches) >= 50:
                     break
         return {"count": len(matches), "query": query, "matches": matches}

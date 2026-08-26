@@ -174,6 +174,66 @@ B 响应：
 |---|---|---|---|
 | `launch` | `name` | `args`, `cwd` | `{"ok","pid","launched"}` |
 | `terminate` | `pid` 或 `name` | — | `{"ok","terminated":[pid,...]}` |
+| `search` | — | `query` | `{"count","query","matches":[{name,path,matched_on,product?}]}` |
+
+> **应用名解析顺序**（`launch` 的 `name`）：产品名/文件说明（显示名）→ exe 文件名 → PATH。
+> 例如 `name: "米哈游启动器"` 会命中 exe 索引中产品名为“米哈游启动器”的 `HYP.exe`，
+> 解决“exe 文件名 ≠ 用户认知的应用名”（如 `ZenlessZoneZero.exe` 的产品名是“绝区零”）。
+
+#### 6.5.1 `search` — 按名称模糊搜索应用
+
+同时匹配 **exe 文件名** 与 **产品名/文件说明**（显示名），并去重：
+
+```json
+{"method": "app", "params": {"action": "search", "query": "米哈游"}}
+```
+
+成功响应 `data`：
+
+```json
+{
+  "count": 1,
+  "query": "米哈游",
+  "matches": [
+    {
+      "name": "HYP.exe",
+      "path": "E:\\Program Files\\miHoYo Launcher\\1.16.1.364\\HYP.exe",
+      "matched_on": "product",
+      "product": "米哈游启动器"
+    }
+  ]
+}
+```
+
+- `matched_on`：`filename`=按文件名命中；`product`=按产品名/文件说明命中（此时附带 `product` 字段）。
+
+#### 6.5.2 exe 索引文件格式（v2）
+
+`exe_index.json` 由 C 端启动时后台构建（`build_exe_index: true`），供 B 端/AI 直接读取定位应用：
+
+```json
+{
+  "hyp.exe": "E:\\Program Files\\miHoYo Launcher\\1.16.1.364\\HYP.exe",
+  "...": "...",
+  "_product": {
+    "米哈游启动器": [
+      {"file": "HYP.exe", "path": "E:\\Program Files\\miHoYo Launcher\\1.16.1.364\\HYP.exe"}
+    ]
+  },
+  "_meta": {
+    "version": 2,
+    "built_at": "2026-08-26 09:30:00",
+    "exe_count": 1418,
+    "product_count": 923
+  }
+}
+```
+
+- **顶层键**：exe 文件名（小写）→ 完整路径（v1 格式兼容，保持不变）。
+- **`_product`**：产品名称/文件说明（小写）→ 文件与路径列表，用于“用户认知的应用名 ≠ 文件名”的查找。
+- **`_meta`**：索引元信息（格式版本、构建时间、条目数）。
+- **回退链**：文件属性里的产品名称（ProductName）缺失或为空时，回退到文件说明（FileDescription）；
+  两者皆无（如无版本资源的裸打包 exe）则仅保留文件名条目，`search`/`launch` 仍可按文件名命中。
 
 ### 6.6 `screenshot` — 截屏
 
