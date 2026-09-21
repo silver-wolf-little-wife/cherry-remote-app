@@ -17,6 +17,9 @@ from pathlib import Path
 
 import psutil
 
+from . import user_session
+from .camera import CameraService
+
 LOG = logging.getLogger("cherry-remote-app.executor")
 
 # exe 索引默认扫描根目录（旧版，已由 _index_roots 枚举所有磁盘替代）
@@ -151,6 +154,8 @@ class Executor:
         # 解决“exe 文件名与用户认知的应用名不一致”（如 HYP.exe 的产品名是“米哈游启动器”）
         self.exe_product_index: dict[str, list[str]] = {}
         self._index_task: asyncio.Task | None = None
+        # 摄像头工具集（camera method）：默认关闭，见 config 的 camera 段
+        self.camera = CameraService(config)
 
     async def execute(self, method: str, params: dict, send_frame=None) -> dict:
         """执行一条指令。method 不在白名单或未实现时抛异常。
@@ -177,13 +182,15 @@ class Executor:
         if action == "status":
             return {
                 "status": "ok",
-                "version": "1.3.0",
+                "version": "1.4.0",
                 "device_id": self.device_id,
                 "pid": os.getpid(),
                 "uptime": round(time.time() - self._start_time, 1),
                 "emergency_stop": self.emergency_stop,
                 "exe_index_entries": len(self.exe_index),
                 "exe_product_entries": len(self.exe_product_index),
+                "camera_enabled": self.camera.enabled,
+                "camera_backend": self.camera.backend,
                 "allowed_actions": sorted(self.allowed_actions),
             }
         if action == "stop":
@@ -765,111 +772,38 @@ class Executor:
         }
 
     async def _screenshot_via_user_session(self) -> dict:
-        """Grab screen via a helper process launched in the interactive user session.
+        """服务会话（Session 0）下切到交互用户会话截屏（服务形态兜底）。
 
-        When this process runs in Session 0 (service session), PIL ImageGrab
-        cannot access the interactive desktop. Fall back to Task Scheduler:
-        run a tiny helper script as the interactive user (Session 1), write the
-        PNG to disk, then read it back.
+        Session 0 拿不到交互桌面，PIL ImageGrab 必然失败；改由计划任务以交互用户身份
+        执行 helper（`--screenshot-helper`），PNG 落盘后由本进程读回。
         """
-        import subprocess
-        import tempfile
-        import uuid
-
-        helper = os.path.join(tempfile.gettempdir(), f"cherry_shot_{uuid.uuid4().hex[:8]}.py")
-        out_png = os.path.join(tempfile.gettempdir(), f"cherry_shot_{uuid.uuid4().hex[:8]}.png")
-        task_name = None
-        helper_code = (
-            "from PIL import ImageGrab\n"
-            "import sys\n"
-            "ImageGrab.grab(all_screens=True).save(sys.argv[1], 'PNG')\n"
-        )
+        out_png = user_session.temp_path(".png", "cherry_shot")
         try:
-            with open(helper, "w", encoding="utf-8") as f:
-                f.write(helper_code)
-
-            username = self._find_active_user()
-            task_name = f"cherry_shot_{uuid.uuid4().hex[:8]}"
-            py_exe = self._find_python_exe()
-            cmd = f'"{py_exe}" "{helper}" "{out_png}"'
-
-            subprocess.run(
-                [
-                    "schtasks", "/create", "/tn", task_name, "/tr", cmd,
-                    "/sc", "once", "/st", "23:59", "/ru", username, "/it", "/f",
-                ],
-                capture_output=True, timeout=15,
+            await user_session.run_in_user_session(
+                ["--screenshot-helper", out_png], out_png, 12, tag="cherry_shot"
             )
-            subprocess.run(
-                ["schtasks", "/run", "/tn", task_name],
-                capture_output=True, timeout=15,
-            )
-
-            # wait for output file (max 12s)
-            deadline = time.monotonic() + 12
-            while time.monotonic() < deadline:
-                if os.path.isfile(out_png) and os.path.getsize(out_png) > 0:
-                    break
-                await asyncio.sleep(0.3)
-            if not os.path.isfile(out_png):
-                raise RuntimeError("helper screenshot produced no output file")
-
             raw = Path(out_png).read_bytes()
             from PIL import Image
 
-            w, h = Image.open(out_png).size
+            width, height = Image.open(out_png).size
             return {
                 "image": base64.b64encode(raw).decode("ascii"),
                 "format": "png",
-                "width": w,
-                "height": h,
+                "width": width,
+                "height": height,
                 "size": len(raw),
             }
         finally:
-            if task_name:
-                subprocess.run(
-                    ["schtasks", "/delete", "/tn", task_name, "/f"],
-                    capture_output=True, timeout=15,
-                )
-            for p in (helper, out_png):
-                try:
-                    os.remove(p)
-                except OSError:
-                    pass
+            user_session.cleanup_paths(out_png)
 
-    @staticmethod
-    def _find_active_user() -> str:
-        """Return the username of the interactive (Session 1) user."""
-        import subprocess
+    # ---------- camera 方法（摄像头工具集） ----------
 
-        try:
-            out = subprocess.run(
-                [
-                    "powershell", "-NoProfile", "-Command",
-                    "(Get-CimInstance Win32_Process -Filter \"Name='explorer.exe'\").GetOwner().User",
-                ],
-                capture_output=True, text=True, timeout=15,
-            )
-            user = (out.stdout or "").strip().splitlines()
-            if user:
-                return user[0].strip()
-        except Exception:
-            pass
-        return os.environ.get("USERNAME", "")
+    async def _exec_camera(self, params: dict) -> dict:
+        """摄像头工具集：枚举设备 / 拍一帧 / 查看状态（实现见 camera.CameraService）。
 
-    def _find_python_exe(self) -> str:
-        """Return a Python interpreter able to run the helper script.
-
-        Under PyInstaller, sys.executable is the exe itself and cannot run a
-        .py script; fall back to python/pythonw found on PATH.
+        action 取值：`capture`（默认，拍一帧）、`list`（枚举摄像头）、`status`（开关/限流）。
+        纯执行：不做任何画面判断；隐私开关、限流与审计在 CameraService 内实现，
+        详见 docs/CAMERA.md。
         """
-        import sys
-
-        exe = sys.executable or ""
-        if exe and not getattr(sys, "frozen", False):
-            return exe
-        for name in ("python.exe", "pythonw.exe", "py.exe"):
-            found = shutil.which(name)
-            if found:
-                return found
-        return "python"
+        action = params.get("action") or "capture"
+        return await self.camera.execute(str(action), params)

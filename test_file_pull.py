@@ -47,11 +47,12 @@ async def server_handler(ws):
     hello = json.loads(await ws.recv())
     assert hello["type"] == "hello", "握手帧类型错误"
     assert hello["token"] == TOKEN, "token 不匹配"
-    assert hello["client_version"] == "1.2.0", "client_version 不是 1.2.0"
+    # 只校验版本字段存在：避免每次 C 端升版本都要改测试（历史上这里写死 1.2.0 已失效）
+    assert hello.get("client_version"), "client_version 缺失"
     await ws.send(
         json.dumps({"type": "hello_ack", "ok": True, "session_id": "test", "server_version": "1.2.0"})
     )
-    RESULTS["T0_handshake"] = "PASS"
+    RESULTS["T0_handshake"] = f"PASS (client_version={hello['client_version']})"
 
     def send_request(req_id, method, params):
         return ws.send(json.dumps({"type": "request", "id": req_id, "method": method, "params": params}))
@@ -148,6 +149,20 @@ async def main():
     except ValueError as e:
         assert "max_pull_size" in str(e), f"错误信息不含 max_pull_size: {e}"
         RESULTS["T4_over_limit"] = "PASS"
+
+    # ---- 覆盖率自检：握手失败会导致后续用例静默跳过，必须显式报错 ----
+    expected = {
+        "T0_handshake",
+        "T1_single_read",
+        "T2_stream_pull",
+        "T3_missing_file",
+        "T4_over_limit",
+        "T5_normal_method",
+    }
+    missing = sorted(expected - set(RESULTS))
+    RESULTS["T6_case_coverage"] = (
+        f"FAIL: 未执行/未上报: {', '.join(missing)}" if missing else "PASS"
+    )
 
     # ---- 汇总 ----
     print("\n===== FILE_PULL TEST REPORT =====")

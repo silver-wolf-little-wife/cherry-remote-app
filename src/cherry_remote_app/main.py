@@ -2,6 +2,10 @@
 
 用法：
     python -m cherry_remote_app -c config.yaml
+
+helper 模式（由计划任务在交互用户会话中启动，只做一次采集后退出）：
+    cherry-remote-app.exe --camera-helper <in.json> <out_img> <out_meta>
+    cherry-remote-app.exe --screenshot-helper <out_png>
 """
 
 import argparse
@@ -45,7 +49,7 @@ def load_config(path: str) -> dict:
         "heartbeat_interval": 15,
         "max_reconnect_delay": 60,
         "default_timeout": 30,
-        "allowed_actions": ["exec", "sys", "ping", "file", "file_pull", "app", "screenshot", "system"],
+        "allowed_actions": ["exec", "sys", "ping", "file", "file_pull", "app", "screenshot", "camera", "system"],
         "max_pull_size": 200 * 1024 * 1024,
     }
     defaults.update({k: v for k, v in cfg.items() if v is not None})
@@ -67,6 +71,12 @@ def setup_logging(level: str = "INFO", log_file: str | None = None) -> None:
 
 
 def main() -> None:
+    # helper 模式：交互会话中的一次性采集（截屏/拍照），不加载配置、不连 B 端
+    if "--camera-helper" in sys.argv or "--screenshot-helper" in sys.argv:
+        from .helper import main as helper_main
+
+        sys.exit(helper_main(sys.argv[1:]))
+
     parser = argparse.ArgumentParser(
         prog="cherry-remote-app",
         description="Cherry Remote 远程操控执行器（纯执行器，无 AI）",

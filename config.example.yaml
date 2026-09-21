@@ -38,7 +38,7 @@ max_pull_size: 209715200
 
 # 指令白名单（仅允许执行以下 method）
 # exec=shell  file=文件操作  app=应用启停  sys=系统信息  screenshot=截屏  ping=连通性
-# file_pull=流式文件拉取  system=急停/状态
+# file_pull=流式文件拉取  camera=摄像头拍照（另受下方 camera.enabled 总开关约束）  system=急停/状态
 allowed_actions:
   - exec
   - sys
@@ -47,7 +47,30 @@ allowed_actions:
   - file_pull
   - app
   - screenshot
+  - camera
   - system
+
+# ── 摄像头工具集（隐私敏感功能，默认关闭，需显式开启）──
+# 开启后 B 端 AI 可调用 camera 指令拍照，用于了解电脑周围环境。
+# 注意：照片会经 B 端上传到你配置的多模态模型服务商。
+camera:
+  enabled: false              # 总开关：false 时 camera 指令一律拒绝
+  backend: "auto"             # auto=OpenCV 优先、缺 OpenCV 时试 ffmpeg；可选 opencv / ffmpeg
+  max_width: 1920             # 分辨率上限（同时受 WebSocket 单帧大小约束）
+  max_height: 1080
+  jpeg_quality: 80            # JPEG 质量（30~95）
+  warmup_frames: 5            # 丢弃前 N 帧，等自动曝光/对焦稳定
+  burst: 1                    # 默认连拍帧数（1~5），多帧时自动选最清晰的一帧
+  probe_max_index: 4          # camera.list 最多探测的摄像头 index
+  min_interval_seconds: 5     # 两次拍摄之间的最小间隔（冷却，防连拍滥用）
+  max_per_hour: 60            # 每小时拍摄次数上限
+  capture_timeout: 15         # 单次拍摄超时（秒）
+  release_delay: 0.2          # 释放设备后的等待（部分 USB 摄像头需延迟才能重开）
+  allow_user_session_fallback: true   # 服务会话（Session 0）下切交互用户会话采集
+  shutter_sound: false        # 拍照时播放提示音（给在场者可听提示）
+  archive_dir: ""             # 非空则在本地留档最近 N 张，便于事后核对（默认关闭）
+  archive_keep: 20            # 留档保留张数
+  # ffmpeg_path: ""           # 可选：ffmpeg 完整路径（缺 OpenCV 时作为兜底后端）
 
 # 急停开关：置 true 后拒绝执行一切指令（本地熔断）
 emergency_stop: false

@@ -110,7 +110,7 @@ class WsClient:
             "type": "hello",
             "token": self.token,
             "device_id": self.device_id,
-            "client_version": "1.3.0",
+            "client_version": "1.4.0",
         }
         await ws.send(json.dumps(hello, ensure_ascii=False))
         ack = json.loads(await asyncio.wait_for(ws.recv(), timeout=15))

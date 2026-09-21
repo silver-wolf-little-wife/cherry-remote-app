@@ -2,3 +2,7 @@ websockets>=12.0
 psutil>=5.9
 PyYAML>=6.0
 Pillow>=10.0
+# 摄像头工具集（camera）依赖；不需要摄像头功能时可不装，
+# 此时 camera 指令会回 CameraBackendUnavailable（其余指令不受影响）
+opencv-python-headless>=4.10
+numpy>=1.26

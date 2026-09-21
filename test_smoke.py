@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 from cherry_remote_app.executor import Executor  # noqa: E402
 
 CONFIG = {
-    "allowed_actions": ["exec", "sys", "ping", "file", "file_pull", "app", "screenshot", "system"],
+    "allowed_actions": ["exec", "sys", "ping", "file", "file_pull", "app", "screenshot", "camera", "system"],
     "build_exe_index": False,
     "exe_index_file": "exe_index.json",
     "default_timeout": 30,
@@ -59,6 +59,13 @@ async def main():
     # screenshot（真实截屏，验证补丁未破坏）
     r = await ex.execute("screenshot", {})
     RESULTS["screenshot"] = bool(r.get("image"))
+
+    # camera：默认关闭（配置无 camera 段）时必须拒绝，采集逻辑见 test_camera.py
+    try:
+        await ex.execute("camera", {})
+        RESULTS["camera_disabled"] = False
+    except Exception as e:  # noqa: BLE001
+        RESULTS["camera_disabled"] = type(e).__name__ == "CameraDisabled"
 
     # system.status
     r = await ex.execute("system", {"action": "status"})

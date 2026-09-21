@@ -1,4 +1,4 @@
-# Cherry Remote 通信协议 v1.0.0
+# Cherry Remote 通信协议 v1.1.0
 
 > 双仓库共享协议。本文档为权威版本，`cherry-astrbot`（插件）与 `cherry-remote-app`（App）必须保持同步。
 
@@ -243,6 +243,99 @@ B 响应：
 
 响应 data：`{"image":"<base64 PNG>","format":"png","width":W,"height":H,"size":N}`
 
+### 6.7 `camera` — 摄像头拍照（v1.1.0 新增）
+
+用于让 B 端 AI 了解**电脑周围的环境**（屏幕之外）：房间、设备指示灯、纸质材料等。
+
+```json
+{"method": "camera", "params": {"action": "capture", "device": 0, "reason": "用户想看看家里情况"}}
+```
+
+`action` 取值：`capture`（**默认**，缺省即拍照）、`list`（枚举摄像头）、`status`（开关与限流状态）。
+
+> ⚠️ 前置条件：C 端 `config.yaml` 必须开启 `camera.enabled: true`，且 `allowed_actions` 含 `camera`，
+> 否则回 `CameraDisabled`。该开关默认关闭（隐私优先）。
+
+#### 6.7.1 `action: capture` — 拍一帧
+
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `device` | int\|string | `0` | 摄像头 index；也可传设备名做尽力匹配（建议先用 `list` 查 index） |
+| `width` / `height` | int | 1280 / 720 | 请求分辨率，按 C 端 `camera.max_width/max_height` 夹取 |
+| `quality` | int | 80 | JPEG 质量，夹取到 30~95 |
+| `warmup_frames` | int | 5 | 丢弃前 N 帧，等自动曝光/对焦稳定 |
+| `burst` | int | 1 | 连拍帧数（1~5），多帧时自动选最清晰的一帧（拉普拉斯方差） |
+| `format` | string | `jpeg` | `jpeg` / `png` |
+| `mirror` | bool | false | 左右镜像 |
+| `save_local` | bool | true | 是否在 C 端本地留档（**仅当配置了 `camera.archive_dir` 时生效**） |
+| `reason` | string | — | 调用原因，仅写入 C 端审计日志 |
+| `timeout` | float | 15 | 单次拍摄超时（秒），夹取到 3~60 |
+
+成功响应 data：
+
+```json
+{
+  "image": "<base64 JPEG>",
+  "format": "jpeg",
+  "width": 1280,
+  "height": 720,
+  "size": 153621,
+  "device": {"index": 0, "backend": "dshow", "system_name": "ASUS FHD webcam"},
+  "burst": 3,
+  "sharpness": 412.7,
+  "captured_at": "2026-08-27 10:12:33",
+  "source": "direct",
+  "elapsed": 1.82,
+  "archived_path": null
+}
+```
+
+- `source`：`direct`（本进程直采）/ `user-session`（服务会话下切交互用户会话采集）/ `ffmpeg`（ffmpeg 兜底后端）。
+- `device.backend`：`dshow` / `msmf` / `default`（OpenCV 后端）。
+- `sharpness`：拉普拉斯方差，仅用于连拍选帧参考，可能为 `null`。
+- 字段命名与 `screenshot` 对齐（`image/format/width/height/size`），B 端可直接复用落盘逻辑。
+
+#### 6.7.2 `action: list` — 枚举摄像头
+
+```json
+{"method": "camera", "params": {"action": "list"}}
+```
+
+成功响应 data：
+
+```json
+{
+  "count": 2,
+  "devices": [
+    {"index": 0, "openable": true, "width": 640, "height": 480, "backend": "dshow", "system_name": "ASUS FHD webcam"},
+    {"index": 1, "openable": true, "width": 640, "height": 480, "backend": "dshow", "system_name": "ASUS IR camera"}
+  ],
+  "system_devices": [
+    {"name": "ASUS FHD webcam", "class": "Camera", "status": "OK"},
+    {"name": "ASUS IR camera", "class": "Camera", "status": "OK"}
+  ],
+  "note": "devices 为 OpenCV 实际可打开的设备；system_devices 为系统 PnP 设备名，顺序仅为尽力对应"
+}
+```
+
+#### 6.7.3 `action: status` — 摄像头功能状态
+
+```json
+{"enabled": true, "backend": "auto", "session_id": 0, "user_session_fallback": true,
+ "min_interval_seconds": 5, "max_per_hour": 60, "captured_last_hour": 3,
+ "cooldown_remaining": 0.0, "archive_dir": null}
+```
+
+#### 6.7.4 限流与会话约束
+
+- C 端冷却 `camera.min_interval_seconds`（默认 5s）+ 每小时配额 `camera.max_per_hour`（默认 60），
+  超限回 `CameraRateLimited`；**失败的尝试同样计数**（防止失败重试绕过限流）。
+- 同一时刻只允许一路拍摄，拍摄进行中再次下发立即回 `CameraBusy`（快速失败，不排队）。
+- 服务会话（Session 0，如 NSSM 服务形态）无法访问摄像头，C 端会自动切到交互用户会话采集
+  （`source: "user-session"`）；无人登录时回 `CameraNoInteractiveSession`。
+- 隐私提醒：照片**会离开本机**（经 B 端进入多模态模型上下文或直接发给用户），
+  C 端可选用 `camera.archive_dir` 本地留档以便事后核对。
+
 ## 7. 错误码
 
 | code | 含义 |
@@ -255,6 +348,21 @@ B 响应：
 | `not_supported` | method 未实现 |
 | `not_allowed` | method 不在白名单 |
 | `internal_error` | 内部异常 |
+
+> C 端当前实现中，`error.code` 取**异常类名**（如 `PermissionError` / `FileNotFoundError`）。
+> `camera` 相关错误使用下列语义化类名，B 端可据此稳定判定并给出人话提示：
+
+| code（camera） | 含义 | 建议提示 |
+|---|---|---|
+| `CameraDisabled` | `camera.enabled=false` 或不在白名单 | 该电脑未开启摄像头功能 |
+| `CameraBackendUnavailable` | 既无 OpenCV 也无 ffmpeg | 该电脑缺少摄像头采集组件 |
+| `CameraNotFound` | 无可用摄像头 / index 或名称不存在 | 没找到摄像头 |
+| `CameraOpenFailed` | 设备打不开（被占用、隐私设置禁止、驱动异常） | 摄像头无法打开，可能被其他程序占用 |
+| `CameraBusy` | 已有一次拍摄正在进行 | 上一次拍摄还没结束，请稍后再试 |
+| `CameraNoInteractiveSession` | Session 0 且无交互用户可兜底 | 请确认有用户登录后再试 |
+| `CameraCaptureFailed` | 打开成功但取不到有效画面 / 采集超时 | 取帧失败，请检查摄像头是否被遮挡 |
+| `CameraRateLimited` | 触发冷却或小时配额 | 拍摄太频繁，请稍后再试 |
+
 
 ## 8. 安全
 
